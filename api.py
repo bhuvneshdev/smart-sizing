@@ -20,7 +20,16 @@ from pydantic import BaseModel
 
 # Import measurement functions
 from measure_person import measure_person as measure_person_basic
-from measure_person_sam2 import segment_person_sam2, measure_person_image
+
+# Try to import SAM2 functions (optional)
+try:
+    from measure_person_sam2 import segment_person_sam2, measure_person_image
+    SAM2_AVAILABLE = True
+except ImportError:
+    print("⚠️  SAM2 not available - SAM2 endpoints will return error")
+    SAM2_AVAILABLE = False
+    segment_person_sam2 = None
+    measure_person_image = None
 
 app = FastAPI(
     title="Person Measurement API",
@@ -98,6 +107,12 @@ async def measure_person_sam2_endpoint(
     - **file**: Image file (JPEG, PNG, etc.)
     - **height_cm**: Known height of the person in centimeters
     """
+    if not SAM2_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="SAM2 is not available on this deployment. Use /measure_person endpoint instead."
+        )
+
     try:
         # Read image
         image_bytes = await file.read()
@@ -146,13 +161,20 @@ async def measure_person_sam2_endpoint(
 @app.get("/")
 async def root():
     """API information and available endpoints."""
+    endpoints = {
+        "/measure_person": "Direct MediaPipe measurement",
+        "/docs": "Interactive API documentation"
+    }
+
+    if SAM2_AVAILABLE:
+        endpoints["/measure_person_sam2"] = "SAM2 segmentation + MediaPipe measurement"
+    else:
+        endpoints["/measure_person_sam2"] = "SAM2 segmentation + MediaPipe measurement (NOT AVAILABLE)"
+
     return {
         "message": "Person Measurement API",
-        "endpoints": {
-            "/measure_person": "Direct MediaPipe measurement",
-            "/measure_person_sam2": "SAM2 segmentation + MediaPipe measurement",
-            "/docs": "Interactive API documentation"
-        },
+        "endpoints": endpoints,
+        "sam2_available": SAM2_AVAILABLE,
         "usage": "Upload an image with known height to get body measurements"
     }
 
