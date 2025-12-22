@@ -9,11 +9,8 @@ import mediapipe as mp
 import numpy as np
 from matplotlib import pyplot as plt
 
-# Use the new MediaPipe Tasks API
-BaseOptions = mp.tasks.BaseOptions
-PoseLandmarker = mp.tasks.vision.PoseLandmarker
-PoseLandmarkerOptions = mp.tasks.vision.PoseLandmarkerOptions
-VisionRunningMode = mp.tasks.vision.RunningMode
+mp_pose = mp.solutions.pose
+mp_drawing = mp.solutions.drawing_utils
 
 def _landmark_px(lms, idx, w, h):
     lm = lms[idx]
@@ -65,36 +62,29 @@ def measure_person(
     h, w = image.shape[:2]
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-    # Create pose landmarker options
-    options = PoseLandmarkerOptions(
-        base_options=BaseOptions(model_asset_path=None),  # Use default model
-        running_mode=VisionRunningMode.IMAGE,
-        min_pose_detection_confidence=min_detection_confidence,
-        min_pose_presence_confidence=min_detection_confidence,
-        min_tracking_confidence=min_detection_confidence,
-    )
+    with mp_pose.Pose(
+        static_image_mode=True,
+        model_complexity=model_complexity,
+        min_detection_confidence=min_detection_confidence,
+    ) as pose:
+        results = pose.process(image_rgb)
 
-    with PoseLandmarker.create_from_options(options) as landmarker:
-        # Convert to MediaPipe Image format
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
-        result = landmarker.detect(mp_image)
-
-    if not result.pose_landmarks:
+    if not results.pose_landmarks:
         return {"ok": False, "error": "No person detected"}
 
-    lms = result.pose_landmarks[0]  # Get first (and only) pose
+    lms = results.pose_landmarks.landmark
 
     def get(idx):
         return _landmark_px(lms, idx, w, h)
 
-    # Required landmarks (2D only for this pass) - using numerical indices
-    nose, nose_v = get(0)  # NOSE
-    l_ankle, la_v = get(27)  # LEFT_ANKLE
-    r_ankle, ra_v = get(28)  # RIGHT_ANKLE
-    l_shoulder, ls_v = get(11)  # LEFT_SHOULDER
-    r_shoulder, rs_v = get(12)  # RIGHT_SHOULDER
-    l_hip, lh_v = get(23)  # LEFT_HIP
-    r_hip, rh_v = get(24)  # RIGHT_HIP
+    # Required landmarks (2D only for this pass)
+    nose, nose_v = get(mp_pose.PoseLandmark.NOSE)
+    l_ankle, la_v = get(mp_pose.PoseLandmark.LEFT_ANKLE)
+    r_ankle, ra_v = get(mp_pose.PoseLandmark.RIGHT_ANKLE)
+    l_shoulder, ls_v = get(mp_pose.PoseLandmark.LEFT_SHOULDER)
+    r_shoulder, rs_v = get(mp_pose.PoseLandmark.RIGHT_SHOULDER)
+    l_hip, lh_v = get(mp_pose.PoseLandmark.LEFT_HIP)
+    r_hip, rh_v = get(mp_pose.PoseLandmark.RIGHT_HIP)
 
     visibility = {
         "nose": nose_v,
@@ -156,10 +146,32 @@ def measure_person(
         print(f"Hip width        : {hip_width_cm:.1f} cm")
 
     if draw:
-        # TODO: Implement drawing with new MediaPipe Tasks API
-        print("Drawing not yet implemented with new MediaPipe API")
+        annotated = image.copy()
+        mp_drawing.draw_landmarks(annotated, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+        cv2.putText(
+            annotated,
+            f"Height {real_height_cm:.1f}cm",
+            (20, 50),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.0,
+            (0, 255, 0),
+            2,
+        )
+        cv2.putText(
+            annotated,
+            f"Shoulders {shoulder_width_cm:.1f}cm Waist {waist_width_cm:.1f}cm",
+            (20, 90),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.9,
+            (0, 255, 255),
+            2,
+        )
+        plt.figure(figsize=(7, 10))
+        plt.imshow(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB))
+        plt.axis("off")
+        plt.show()
         if return_image:
-            result["annotated_image_rgb"] = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            result["annotated_image_rgb"] = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
 
     return result
 
