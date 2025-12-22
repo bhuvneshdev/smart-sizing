@@ -9,8 +9,27 @@ import mediapipe as mp
 import numpy as np
 from matplotlib import pyplot as plt
 
-mp_pose = mp.solutions.pose
-mp_drawing = mp.solutions.drawing_utils
+# Use Tasks API
+from mediapipe.tasks.python.vision import PoseLandmarker
+from mediapipe.tasks.python import BaseOptions
+import urllib.request
+import tempfile
+import os
+
+def create_pose_landmarker():
+    """Create pose landmarker with downloaded model"""
+    # Download the pose model if not already downloaded
+    model_url = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task'
+    model_dir = os.path.join(os.path.dirname(__file__), 'models')
+    os.makedirs(model_dir, exist_ok=True)
+    model_path = os.path.join(model_dir, 'pose_landmarker_lite.task')
+    
+    if not os.path.exists(model_path):
+        print("Downloading pose model...")
+        urllib.request.urlretrieve(model_url, model_path)
+        print("Model downloaded successfully")
+    
+    return PoseLandmarker.create_from_model_path(model_path)
 
 def _landmark_px(lms, idx, w, h):
     lm = lms[idx]
@@ -60,31 +79,33 @@ def measure_person(
         return {"ok": False, "error": f"Image not found: {image_path}"}
 
     h, w = image.shape[:2]
-    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    
+    # Convert to MediaPipe Image format
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image)
 
-    with mp_pose.Pose(
-        static_image_mode=True,
-        model_complexity=model_complexity,
-        min_detection_confidence=min_detection_confidence,
-    ) as pose:
-        results = pose.process(image_rgb)
+    # Create pose landmarker
+    pose_landmarker = create_pose_landmarker()
+    
+    # Detect pose
+    results = pose_landmarker.detect(mp_image)
 
     if not results.pose_landmarks:
         return {"ok": False, "error": "No person detected"}
 
-    lms = results.pose_landmarks.landmark
+    # Get the first (and typically only) pose
+    lms = results.pose_landmarks[0]
 
     def get(idx):
         return _landmark_px(lms, idx, w, h)
 
     # Required landmarks (2D only for this pass)
-    nose, nose_v = get(mp_pose.PoseLandmark.NOSE)
-    l_ankle, la_v = get(mp_pose.PoseLandmark.LEFT_ANKLE)
-    r_ankle, ra_v = get(mp_pose.PoseLandmark.RIGHT_ANKLE)
-    l_shoulder, ls_v = get(mp_pose.PoseLandmark.LEFT_SHOULDER)
-    r_shoulder, rs_v = get(mp_pose.PoseLandmark.RIGHT_SHOULDER)
-    l_hip, lh_v = get(mp_pose.PoseLandmark.LEFT_HIP)
-    r_hip, rh_v = get(mp_pose.PoseLandmark.RIGHT_HIP)
+    nose, nose_v = get(0)  # NOSE
+    l_ankle, la_v = get(27)  # LEFT_ANKLE
+    r_ankle, ra_v = get(28)  # RIGHT_ANKLE
+    l_shoulder, ls_v = get(11)  # LEFT_SHOULDER
+    r_shoulder, rs_v = get(12)  # RIGHT_SHOULDER
+    l_hip, lh_v = get(23)  # LEFT_HIP
+    r_hip, rh_v = get(24)  # RIGHT_HIP
 
     visibility = {
         "nose": nose_v,
@@ -147,7 +168,11 @@ def measure_person(
 
     if draw:
         annotated = image.copy()
-        mp_drawing.draw_landmarks(annotated, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+        # Draw landmarks manually since Tasks API drawing is different
+        for landmark in lms:
+            x, y = int(landmark.x * w), int(landmark.y * h)
+            cv2.circle(annotated, (x, y), 5, (0, 255, 0), -1)
+        
         cv2.putText(
             annotated,
             f"Height {real_height_cm:.1f}cm",

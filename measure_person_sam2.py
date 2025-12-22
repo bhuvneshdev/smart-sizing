@@ -23,6 +23,12 @@ import numpy as np
 from matplotlib import pyplot as plt
 import mediapipe as mp
 
+# Use Tasks API
+from mediapipe.tasks.python.vision import PoseLandmarker
+from mediapipe.tasks.python import BaseOptions
+import urllib.request
+import os
+
 try:
     from sam2.build_sam import build_sam2
     from sam2.sam2_image_predictor import SAM2ImagePredictor
@@ -30,8 +36,21 @@ except ImportError:
     print("Please install sam2: pip install sam2")
     sys.exit(1)
 
-mp_pose = mp.solutions.pose
-mp_drawing = mp.solutions.drawing_utils
+# Create pose landmarker (reuse the same function)
+def create_pose_landmarker():
+    """Create pose landmarker with downloaded model"""
+    # Download the pose model if not already downloaded
+    model_url = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task'
+    model_dir = os.path.join(os.path.dirname(__file__), 'models')
+    os.makedirs(model_dir, exist_ok=True)
+    model_path = os.path.join(model_dir, 'pose_landmarker_lite.task')
+    
+    if not os.path.exists(model_path):
+        print("Downloading pose model...")
+        urllib.request.urlretrieve(model_url, model_path)
+        print("Model downloaded successfully")
+    
+    return PoseLandmarker.create_from_model_path(model_path)
 
 # SAM 2 checkpoint - update this path based on your downloaded model
 SAM2_CHECKPOINT = "sam2.1_hiera_small.pt"
@@ -136,27 +155,34 @@ def segment_person_sam2(image_path):
 # --- MediaPipe measurement ---
 def measure_person_image(image, real_height_cm=177.0, draw=True, verbose=True):
     h, w = image.shape[:2]
-    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    with mp_pose.Pose(
-        static_image_mode=True,
-        model_complexity=2,
-        min_detection_confidence=0.7,
-    ) as pose:
-        results = pose.process(image_rgb)
+    
+    # Convert to MediaPipe Image format
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image)
+
+    # Create pose landmarker
+    pose_landmarker = create_pose_landmarker()
+    
+    # Detect pose
+    results = pose_landmarker.detect(mp_image)
+
     if not results.pose_landmarks:
         print("No person detected!")
         return None
-    lms = results.pose_landmarks.landmark
+    
+    # Get the first (and typically only) pose
+    lms = results.pose_landmarks[0]
+    
     def get(idx):
         lm = lms[idx]
         return np.array([lm.x * w, lm.y * h])
-    nose = get(mp_pose.PoseLandmark.NOSE)
-    l_ankle = get(mp_pose.PoseLandmark.LEFT_ANKLE)
-    r_ankle = get(mp_pose.PoseLandmark.RIGHT_ANKLE)
-    l_shoulder = get(mp_pose.PoseLandmark.LEFT_SHOULDER)
-    r_shoulder = get(mp_pose.PoseLandmark.RIGHT_SHOULDER)
-    l_hip = get(mp_pose.PoseLandmark.LEFT_HIP)
-    r_hip = get(mp_pose.PoseLandmark.RIGHT_HIP)
+    
+    nose = get(0)  # NOSE
+    l_ankle = get(27)  # LEFT_ANKLE
+    r_ankle = get(28)  # RIGHT_ANKLE
+    l_shoulder = get(11)  # LEFT_SHOULDER
+    r_shoulder = get(12)  # RIGHT_SHOULDER
+    l_hip = get(23)  # LEFT_HIP
+    r_hip = get(24)  # RIGHT_HIP
     height_px = (np.linalg.norm(nose - l_ankle) + np.linalg.norm(nose - r_ankle)) / 2
     px_to_cm = real_height_cm / (height_px * 1.04)
     shoulder_width = np.linalg.norm(l_shoulder - r_shoulder) * px_to_cm
@@ -177,7 +203,11 @@ def measure_person_image(image, real_height_cm=177.0, draw=True, verbose=True):
         print(f"Hip bone width   : {hip_bone_width:.1f} cm\n")
     if draw:
         annotated = image.copy()
-        mp_drawing.draw_landmarks(annotated, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+        # Draw landmarks manually since Tasks API drawing is different
+        for landmark in lms:
+            x, y = int(landmark.x * w), int(landmark.y * h)
+            cv2.circle(annotated, (x, y), 5, (0, 255, 0), -1)
+        
         plt.figure(figsize=(7, 10))
         plt.imshow(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB))
         plt.axis("off")
