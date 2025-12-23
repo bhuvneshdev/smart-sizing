@@ -16,8 +16,17 @@ import urllib.request
 import tempfile
 import os
 
+# Cache the pose landmarker to avoid reloading it on every call
+_pose_landmarker_cache = None
+
 def create_pose_landmarker():
-    """Create pose landmarker with downloaded model"""
+    """Create or return cached pose landmarker with downloaded model"""
+    global _pose_landmarker_cache
+    
+    # Return cached instance if available
+    if _pose_landmarker_cache is not None:
+        return _pose_landmarker_cache
+    
     # Download the pose model if not already downloaded
     model_url = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task'
     model_dir = os.path.join(os.path.dirname(__file__), 'models')
@@ -29,7 +38,9 @@ def create_pose_landmarker():
         urllib.request.urlretrieve(model_url, model_path)
         print("Model downloaded successfully")
     
-    return PoseLandmarker.create_from_model_path(model_path)
+    # Create and cache the landmarker
+    _pose_landmarker_cache = PoseLandmarker.create_from_model_path(model_path)
+    return _pose_landmarker_cache
 
 def _landmark_px(lms, idx, w, h):
     lm = lms[idx]

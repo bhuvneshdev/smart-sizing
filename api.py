@@ -12,11 +12,31 @@ Usage:
 import io
 import sys
 from typing import Optional
+from contextlib import asynccontextmanager
 import cv2
 import numpy as np
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+
+# Pre-download pose model at startup to avoid timeouts
+from measure_person import create_pose_landmarker
+
+# Global pose landmarker instance (created at startup)
+pose_landmarker = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup and shutdown events"""
+    global pose_landmarker
+    print("🔄 Downloading MediaPipe pose model at startup...")
+    try:
+        pose_landmarker = create_pose_landmarker()
+        print("✅ Pose model loaded successfully")
+    except Exception as e:
+        print(f"⚠️  Failed to load pose model: {e}")
+    yield
+    print("🛑 Shutting down...")
 
 # Import measurement functions
 from measure_person import measure_person as measure_person_basic
@@ -34,7 +54,8 @@ except ImportError:
 app = FastAPI(
     title="Person Measurement API",
     description="API for measuring person body dimensions using MediaPipe Pose and SAM2 segmentation",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 class MeasurementResponse(BaseModel):
