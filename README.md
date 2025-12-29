@@ -2,6 +2,30 @@
 
 Single-image body width estimation using MediaPipe Pose.
 
+## 🚀 Quick Start
+
+### Run the API Service Locally
+
+```bash
+# 1. Clone the repository and navigate to it
+cd smart-sizing
+
+# 2. Create and activate virtual environment
+python -m venv .venv
+source .venv/bin/activate
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Start the API server
+uvicorn api:app --reload --host 0.0.0.0 --port 8000
+```
+
+Once the server is running, open your browser and go to:
+**http://0.0.0.0:8000/docs** to access the interactive API documentation (Swagger UI).
+
+You can now upload images and test both endpoints directly from the web interface.
+
 ## Features
 - Height-based pixel scaling (nose–ankle segments with head offset).
 - Shoulder, hip, multi-slice torso widths (waist=min slice, chest=upper slice adj).
@@ -29,19 +53,33 @@ Result keys: `shoulder_width_cm, hip_width_cm, waist_width_cm, chest_width_cm, c
 
 ## API Usage
 
-Start the REST API server:
-```bash
-python api.py
-# or
-uvicorn api:app --reload --host 0.0.0.0 --port 8000
+The API is already running from the Quick Start section above. You can interact with it in two ways:
+
+### 1. **Interactive Web Interface (Recommended)**
+Open **http://0.0.0.0:8000/docs** in your browser to use Swagger UI for testing.
+
+### 2. **Programmatic Usage (Python)**
+
+```python
+import requests
+
+files = {'file': open('person.jpg', 'rb')}
+data = {'height_cm': 183}
+
+# Direct measurement
+response = requests.post('http://0.0.0.0:8000/measure_person', files=files, data=data)
+print(response.json())
+
+# SAM2 + measurement
+response = requests.post('http://0.0.0.0:8000/measure_person_sam2', files=files, data=data)
+print(response.json())
 ```
 
-### API Endpoints
+### Available Endpoints
 
-- `GET /` - API information
 - `POST /measure_person` - Direct MediaPipe measurement
 - `POST /measure_person_sam2` - SAM2 segmentation + MediaPipe measurement
-- `GET /docs` - Interactive API documentation
+- `GET /` - API information
 
 ### Example API Usage
 
