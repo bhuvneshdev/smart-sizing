@@ -46,10 +46,6 @@ def _landmark_px(lms, idx, w, h):
     lm = lms[idx]
     return np.array([lm.x * w, lm.y * h]), lm.visibility
 
-def _landmark_px(lms, idx, w, h):
-    lm = lms[idx]
-    return np.array([lm.x * w, lm.y * h]), lm.visibility
-
 def measure_person(
     image_path: str = "person.jpg",
     real_height_cm: float = 177.0,
@@ -145,16 +141,15 @@ def measure_person(
     hip_width_cm = np.linalg.norm(l_hip - r_hip) * px_to_cm
 
     # Multi-slice torso sampling between shoulders & hips (linear interpolation)
-    slice_fracs = [0.30, 0.40, 0.50, 0.60, 0.70]
     slice_widths_cm = []
-    for f in slice_fracs:
+    for f in [0.30, 0.40, 0.50, 0.60, 0.70]:
         left_point = l_shoulder * (1 - f) + l_hip * f
         right_point = r_shoulder * (1 - f) + r_hip * f
         slice_widths_cm.append(np.linalg.norm(left_point - right_point) * px_to_cm)
 
-    # Waist heuristic: minimal width slice (inward taper assumption)
+    # Waist: minimal width slice (inward taper assumption)
     waist_width_cm = float(min(slice_widths_cm))
-    # Chest: near upper slice with mild outward adjustment
+    # Chest: upper slice with mild outward adjustment
     chest_width_cm = slice_widths_cm[0] * 1.03
 
     result = {
@@ -166,7 +161,6 @@ def measure_person(
         "waist_width_cm": waist_width_cm,
         "chest_width_cm": chest_width_cm,
         "torso_slice_widths_cm": slice_widths_cm,
-        "slice_fracs": slice_fracs,
         "visibility": visibility,
     }
 

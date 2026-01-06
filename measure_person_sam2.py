@@ -84,14 +84,26 @@ def segment_person_sam2(image_path):
         multimask_output=True  # Get multiple masks to choose the best
     )
     
-    # Select the largest mask (likely the person)
-    largest_idx = np.argmax([m.sum() for m in masks])
-    mask = masks[largest_idx].astype(bool)
+    # SAM2 returns 3 masks ordered by quality
+    # Usually: mask[0] = coarse, mask[1] = medium, mask[2] = finest detail
+    # For person segmentation, the finest (mask[2]) or medium (mask[1]) usually works best
+    # BUT we need to avoid selecting pure background
     
-    # Check if mask is reasonable (should be at least 10% of image)
-    mask_ratio = mask.sum() / (h * w)
-    if mask_ratio < 0.1:
-        print(f"Warning: Mask too small ({mask_ratio:.1%} of image), trying different strategy...")
+    # Try each mask in order of quality (finest first)
+    mask = None
+    selected_idx = None
+    for idx in range(len(masks) - 1, -1, -1):  # Try finest first (index 2, 1, 0)
+        m = masks[idx].astype(bool)
+        ratio = m.sum() / (h * w)
+        
+        # A reasonable person mask should be 5-80% of image
+        if 0.05 <= ratio <= 0.80:
+            mask = m
+            selected_idx = idx
+            break
+    
+    # If no good mask found in the main prediction, fall through to fallback
+    if mask is None:
         # Try points at common person locations (upper-middle, middle, lower-middle)
         test_points = np.array([
             [w//2, h//3],   # upper body
@@ -99,7 +111,7 @@ def segment_person_sam2(image_path):
             [w//2, 2*h//3]  # lower body
         ])
         best_mask = None
-        best_size = 0
+        best_ratio = 0
         
         for point in test_points:
             masks_temp, _, _ = predictor.predict(
@@ -107,15 +119,17 @@ def segment_person_sam2(image_path):
                 point_labels=np.array([1]),
                 multimask_output=True
             )
-            for m in masks_temp:
-                if m.sum() > best_size:
-                    best_size = m.sum()
+            for idx, m in enumerate(masks_temp):
+                ratio = m.sum() / (h * w)
+                # Look for reasonable person-sized masks
+                if 0.05 <= ratio <= 0.80 and ratio > best_ratio:
+                    best_ratio = ratio
                     best_mask = m
         
-        if best_mask is not None and best_size > 0:
+        if best_mask is not None and best_ratio > 0:
             mask = best_mask.astype(bool)
         else:
-            print("Warning: SAM 2 segmentation failed, using original image")
+            print("[SAM2] No suitable mask found even in fallback, using original image")
             return image
     
     # Find bounding box of the mask
@@ -142,15 +156,21 @@ def segment_person_sam2(image_path):
     # Crop image to bounding box
     cropped = image[rmin:rmax, cmin:cmax]
     
-    # Debug: save cropped image
+    # Convert back to RGB for MediaPipe (we had BGR from cv2.imread)
+    cropped_rgb = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
+    
+    # Debug: save cropped image to project directory with timestamp
     import os
-    debug_path = image_path.replace('.png', '_cropped.png').replace('.jpeg', '_cropped.jpeg').replace('.jpg', '_cropped.jpg')
-    cv2.imwrite(debug_path, cropped)
+    from datetime import datetime
+    project_dir = os.path.dirname(os.path.abspath(__file__))
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    debug_path = os.path.join(project_dir, f"cropped_{timestamp}.jpg")
+    cv2.imwrite(debug_path, cropped)  # Save BGR for visual inspection
     print(f"Saved cropped image to {debug_path}")
     print(f"Original size: {w}x{h}, Cropped size: {cropped.shape[1]}x{cropped.shape[0]}")
     print(f"Bbox: r[{rmin}-{rmax}], c[{cmin}-{cmax}]")
     
-    return cropped
+    return cropped_rgb  # Return RGB format for MediaPipe
 
 # --- MediaPipe measurement ---
 def measure_person_image(image, real_height_cm=177.0, draw=True, verbose=True):
@@ -164,7 +184,7 @@ def measure_person_image(image, real_height_cm=177.0, draw=True, verbose=True):
     
     # Detect pose
     results = pose_landmarker.detect(mp_image)
-
+    
     if not results.pose_landmarks:
         print("No person detected!")
         return None
@@ -174,15 +194,27 @@ def measure_person_image(image, real_height_cm=177.0, draw=True, verbose=True):
     
     def get(idx):
         lm = lms[idx]
-        return np.array([lm.x * w, lm.y * h])
+        return np.array([lm.x * w, lm.y * h]), lm.visibility
     
-    nose = get(0)  # NOSE
-    l_ankle = get(27)  # LEFT_ANKLE
-    r_ankle = get(28)  # RIGHT_ANKLE
-    l_shoulder = get(11)  # LEFT_SHOULDER
-    r_shoulder = get(12)  # RIGHT_SHOULDER
-    l_hip = get(23)  # LEFT_HIP
-    r_hip = get(24)  # RIGHT_HIP
+    nose, nose_v = get(0)  # NOSE
+    l_ankle, la_v = get(27)  # LEFT_ANKLE
+    r_ankle, ra_v = get(28)  # RIGHT_ANKLE
+    l_shoulder, ls_v = get(11)  # LEFT_SHOULDER
+    r_shoulder, rs_v = get(12)  # RIGHT_SHOULDER
+    l_hip, lh_v = get(23)  # LEFT_HIP
+    r_hip, rh_v = get(24)  # RIGHT_HIP
+    
+    # Capture visibility scores
+    visibility = {
+        "nose": float(nose_v),
+        "l_ankle": float(la_v),
+        "r_ankle": float(ra_v),
+        "l_shoulder": float(ls_v),
+        "r_shoulder": float(rs_v),
+        "l_hip": float(lh_v),
+        "r_hip": float(rh_v),
+    }
+    
     height_px = (np.linalg.norm(nose - l_ankle) + np.linalg.norm(nose - r_ankle)) / 2
     px_to_cm = real_height_cm / (height_px * 1.04)
     shoulder_width = np.linalg.norm(l_shoulder - r_shoulder) * px_to_cm
@@ -219,6 +251,7 @@ def measure_person_image(image, real_height_cm=177.0, draw=True, verbose=True):
         "chest_width_cm": chest_approx,
         "slice_widths_cm": slice_widths_cm,
         "px_to_cm": px_to_cm,
+        "visibility": visibility,
     }
 
 if __name__ == "__main__":

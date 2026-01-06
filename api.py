@@ -68,7 +68,6 @@ class MeasurementResponse(BaseModel):
     waist_width_cm: Optional[float] = None
     chest_width_cm: Optional[float] = None
     torso_slice_widths_cm: Optional[list] = None
-    slice_fracs: Optional[list] = None
     visibility: Optional[dict] = None
 
 def image_to_cv2(image_bytes: bytes) -> np.ndarray:
@@ -140,7 +139,10 @@ async def measure_person_sam2_endpoint(
         img = image_to_cv2(image_bytes)
 
         # Save temporarily for SAM2 function (it expects a file path)
-        temp_path = f"/tmp/temp_{file.filename}"
+        # Use project directory for easier debugging
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        temp_path = f"temp_{timestamp}_{file.filename}"
         cv2.imwrite(temp_path, img)
 
         # Segment with SAM2
@@ -171,7 +173,7 @@ async def measure_person_sam2_endpoint(
             "waist_width_cm": result.get("waist_width_cm"),
             "chest_width_cm": result.get("chest_width_cm"),
             "torso_slice_widths_cm": result.get("slice_widths_cm"),
-            "slice_fracs": [0.30, 0.40, 0.50, 0.60, 0.70],  # Default slice fractions
+            "visibility": result.get("visibility"),
         }
 
         return MeasurementResponse(**formatted_result)
