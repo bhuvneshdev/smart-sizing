@@ -56,128 +56,117 @@ def create_pose_landmarker():
 SAM2_CHECKPOINT = "sam2.1_hiera_small.pt"
 SAM2_CONFIG = "configs/sam2.1/sam2.1_hiera_s.yaml"
 
-# --- SAM 2 segmentation ---
+# --- SAM 2 segmentation (point-based) ---
 def segment_person_sam2(image_path):
-    """Segment person using SAM 2 and crop to bounding box."""
+    """Segment person using SAM 2 with center point prompt."""
+    import os
+    
     image = cv2.imread(image_path)
     if image is None:
         raise FileNotFoundError(image_path)
+
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    h, w = image.shape[:2]
+
+    print(f"[SAM2] Loading model from {SAM2_CONFIG} and {SAM2_CHECKPOINT}")
     
     # Build SAM 2 model
-    sam2_model = build_sam2(SAM2_CONFIG, SAM2_CHECKPOINT, device='cpu')
+    sam2_model = build_sam2(SAM2_CONFIG, SAM2_CHECKPOINT, device="cpu")
     predictor = SAM2ImagePredictor(sam2_model)
-    
+
+    print(f"[SAM2] Setting image ({w}x{h})")
     predictor.set_image(image_rgb)
+
+    # 🔹 Use multiple points to capture entire person (head, torso, legs)
+    point_coords = np.array([
+        [w // 2, h // 4],      # Head area
+        [w // 2, h // 2],      # Torso area
+        [w // 2, 3 * h // 4],  # Legs area
+    ])
+    point_labels = np.array([1, 1, 1])  # All foreground
     
-    # Use automatic mask generation to find the person
-    # Try multiple strategies: center point, and if that fails, try automatic
-    h, w = image.shape[:2]
+    print(f"[SAM2] Predicting with {len(point_coords)} points: head, torso, legs")
     
-    # Strategy 1: Try center point
-    input_point = np.array([[w//2, h//2]])
-    input_label = np.array([1])
-    
-    masks, scores, _ = predictor.predict(
-        point_coords=input_point,
-        point_labels=input_label,
-        multimask_output=True  # Get multiple masks to choose the best
-    )
-    
-    # SAM2 returns 3 masks ordered by quality
-    # Usually: mask[0] = coarse, mask[1] = medium, mask[2] = finest detail
-    # For person segmentation, the finest (mask[2]) or medium (mask[1]) usually works best
-    # BUT we need to avoid selecting pure background
-    
-    # Try each mask in order of quality (finest first)
-    mask = None
-    selected_idx = None
-    for idx in range(len(masks) - 1, -1, -1):  # Try finest first (index 2, 1, 0)
-        m = masks[idx].astype(bool)
-        ratio = m.sum() / (h * w)
+    try:
+        masks, scores, logits = predictor.predict(
+            point_coords=point_coords,
+            point_labels=point_labels,
+            multimask_output=True
+        )
         
-        # A reasonable person mask should be 5-80% of image
-        if 0.05 <= ratio <= 0.80:
-            mask = m
-            selected_idx = idx
-            break
-    
-    # If no good mask found in the main prediction, fall through to fallback
-    if mask is None:
-        # Try points at common person locations (upper-middle, middle, lower-middle)
-        test_points = np.array([
-            [w//2, h//3],   # upper body
-            [w//2, h//2],   # torso  
-            [w//2, 2*h//3]  # lower body
-        ])
-        best_mask = None
-        best_ratio = 0
+        print(f"[SAM2] Got {len(masks)} masks with scores: {scores}")
         
-        for point in test_points:
-            masks_temp, _, _ = predictor.predict(
-                point_coords=point.reshape(1, 2),
-                point_labels=np.array([1]),
-                multimask_output=True
-            )
-            for idx, m in enumerate(masks_temp):
-                ratio = m.sum() / (h * w)
-                # Look for reasonable person-sized masks
-                if 0.05 <= ratio <= 0.80 and ratio > best_ratio:
-                    best_ratio = ratio
-                    best_mask = m
+        # Use the best (highest confidence) mask
+        best_idx = np.argmax(scores)
+        mask = masks[best_idx].astype(bool)
         
-        if best_mask is not None and best_ratio > 0:
-            mask = best_mask.astype(bool)
-        else:
-            print("[SAM2] No suitable mask found even in fallback, using original image")
-            return image
-    
-    # Find bounding box of the mask
+        print(f"[SAM2] Selected mask {best_idx} with score {scores[best_idx]:.4f}")
+        
+    except Exception as e:
+        print(f"[SAM2] Prediction failed: {e}")
+        import traceback
+        traceback.print_exc()
+        print("[SAM2] Returning original image")
+        return image
+
+    # 🔹 Crop to bounding box with padding
     rows = np.any(mask, axis=1)
     cols = np.any(mask, axis=0)
     
     if not rows.any() or not cols.any():
-        # No valid mask, return original image
-        print("Warning: SAM 2 segmentation failed, using original image")
+        print("[SAM2] No valid mask found, returning original image")
         return image
     
     rmin, rmax = np.where(rows)[0][[0, -1]]
     cmin, cmax = np.where(cols)[0][[0, -1]]
-    
-    # Add generous padding to ensure full body (head and feet) is included
-    # More padding vertically (50%) to capture head/feet, less horizontally (20%)
-    padding_vertical = int(0.50 * (rmax - rmin))
-    padding_horizontal = int(0.20 * (cmax - cmin))
-    rmin = max(0, rmin - padding_vertical)
-    rmax = min(h, rmax + padding_vertical)
-    cmin = max(0, cmin - padding_horizontal)
-    cmax = min(w, cmax + padding_horizontal)
-    
-    # Crop image to bounding box
+
+    # Minimal padding - SAM2 with multiple points should capture full person
+    padding_v = int(0.05 * (rmax - rmin))  # 5% padding
+    padding_h = int(0.05 * (cmax - cmin))  # 5% padding
+
+    rmin = max(0, rmin - padding_v)
+    rmax = min(h, rmax + padding_v)
+    cmin = max(0, cmin - padding_h)
+    cmax = min(w, cmax + padding_h)
+
     cropped = image[rmin:rmax, cmin:cmax]
     
-    # Convert back to RGB for MediaPipe (we had BGR from cv2.imread)
-    cropped_rgb = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
+    # Save cropped image to project root directory
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    filename = os.path.basename(image_path)
+    base_name = os.path.splitext(filename)[0]
+    ext = os.path.splitext(filename)[1]
     
-    # Debug: save cropped image to project directory with timestamp
-    import os
-    from datetime import datetime
-    project_dir = os.path.dirname(os.path.abspath(__file__))
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    debug_path = os.path.join(project_dir, f"cropped_{timestamp}.jpg")
-    cv2.imwrite(debug_path, cropped)  # Save BGR for visual inspection
-    print(f"Saved cropped image to {debug_path}")
-    print(f"Original size: {w}x{h}, Cropped size: {cropped.shape[1]}x{cropped.shape[0]}")
-    print(f"Bbox: r[{rmin}-{rmax}], c[{cmin}-{cmax}]")
+    # Clean up temp filename if it's from API (remove timestamp prefix)
+    if base_name.startswith("temp_"):
+        # Extract just the original filename part after timestamp and underscore
+        parts = base_name.split("_", 2)  # Split on first two underscores
+        if len(parts) >= 3:
+            base_name = parts[2]  # Get the original filename
     
-    return cropped_rgb  # Return RGB format for MediaPipe
+    cropped_path = os.path.join(script_dir, f"{base_name}_cropped{ext}")
+    
+    success = cv2.imwrite(cropped_path, cropped)
+    if success:
+        print(f"[SAM2] ✅ Saved cropped image to {cropped_path}")
+        print(f"[SAM2]    Original: {w}x{h}, Cropped: {cropped.shape[1]}x{cropped.shape[0]}")
+    else:
+        print(f"[SAM2] ❌ Failed to save cropped image to {cropped_path}")
+
+    return cropped
 
 # --- MediaPipe measurement ---
 def measure_person_image(image, real_height_cm=177.0, draw=True, verbose=True):
     h, w = image.shape[:2]
     
+    # Convert BGR to RGB if needed (cv2 reads in BGR, MediaPipe expects RGB)
+    if len(image.shape) == 3 and image.shape[2] == 3:
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    else:
+        image_rgb = image
+    
     # Convert to MediaPipe Image format
-    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image)
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
 
     # Create pose landmarker
     pose_landmarker = create_pose_landmarker()

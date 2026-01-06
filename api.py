@@ -139,10 +139,7 @@ async def measure_person_sam2_endpoint(
         img = image_to_cv2(image_bytes)
 
         # Save temporarily for SAM2 function (it expects a file path)
-        # Use project directory for easier debugging
-        from datetime import datetime
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        temp_path = f"temp_{timestamp}_{file.filename}"
+        temp_path = f"/tmp/temp_{file.filename}"
         cv2.imwrite(temp_path, img)
 
         # Segment with SAM2
